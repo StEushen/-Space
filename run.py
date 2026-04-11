@@ -119,10 +119,56 @@ if __name__ == '__main__':
                         help='PPN only: enable multi-scale intrinsic-time aggregation (1/0)')
     parser.add_argument('--ppn_tau_scales', type=str, default='1,2,4',
                         help='PPN only: comma-separated tau scales used by multi-scale aggregation')
+    parser.add_argument('--ppn_use_tau_field', type=int, default=0,
+                        help='PPN only: enable Version-A intrinsic time field (global+local) (1/0)')
+    parser.add_argument('--ppn_tau_field_local_scale', type=float, default=0.5,
+                        help='PPN only: scale for local component in tau field')
+    parser.add_argument('--ppn_lambda_tau_smooth', type=float, default=0.0,
+                        help='PPN only: weight of tau increment smoothness regularization')
+    parser.add_argument('--ppn_use_tau_space_predictor', type=int, default=1,
+                        help='PPN only: predict in tau space with explicit global mapping branch (1/0)')
+    parser.add_argument('--ppn_tau_global_scale', type=float, default=1.0,
+                        help='PPN only: scale for global mapping branch before tau-space adjustment')
+    parser.add_argument('--ppn_tau_cross_adjust_scale', type=float, default=0.2,
+                        help='PPN only: scale of cross adjustment between global and tau branches')
+    parser.add_argument('--ppn_use_tau_cross_adjust_gate', type=int, default=1,
+                        help='PPN only: gate the cross adjustment branch for stability (1/0)')
+    parser.add_argument('--ppn_use_bidirectional_tau_coupling', type=int, default=0,
+                        help='PPN only: enable bidirectional global/tau coupling gates (1/0)')
+    parser.add_argument('--ppn_lambda_tau_recon', type=float, default=0.05,
+                        help='PPN only: weight of tau-space reconstruction consistency loss')
+    parser.add_argument('--ppn_lambda_tau_flat', type=float, default=0.01,
+                        help='PPN only: weight of tau-space flatness (dynamics simplification) loss')
+    parser.add_argument('--ppn_lambda_tau_mono', type=float, default=0.01,
+                        help='PPN only: weight of monotonic clock constraint loss')
+    parser.add_argument('--ppn_disable_accel_tau_loss_in_axiom_mode', type=int, default=1,
+                        help='PPN only: disable acceleration-analogy tau loss when tau-space predictor is enabled (1/0)')
+    parser.add_argument('--ppn_use_tau_phase_schedule', type=int, default=1,
+                        help='PPN only: use 3-phase schedule for tau-space auxiliary losses (1/0)')
+    parser.add_argument('--ppn_tau_phase1_ratio', type=float, default=0.3,
+                        help='PPN only: fraction of epochs for phase-1 (global mapping focus)')
+    parser.add_argument('--ppn_tau_phase2_ratio', type=float, default=0.5,
+                        help='PPN only: fraction of epochs for phase-2 (tau geometry strengthening)')
+    parser.add_argument('--ppn_tau_phase1_aux_scale', type=float, default=0.3,
+                        help='PPN only: scale on tau auxiliary losses in phase-1')
+    parser.add_argument('--ppn_tau_phase2_aux_scale', type=float, default=1.0,
+                        help='PPN only: scale on tau auxiliary losses in phase-2')
+    parser.add_argument('--ppn_tau_phase3_aux_scale', type=float, default=1.2,
+                        help='PPN only: scale on tau auxiliary losses in phase-3')
     parser.add_argument('--ppn_use_horizon_residual', type=int, default=0,
                         help='PPN only: enable horizon-conditioned residual correction (1/0)')
+    parser.add_argument('--ppn_use_horizon_residual_gate', type=int, default=0,
+                        help='PPN only: enable lightweight gate on horizon residual correction (1/0)')
     parser.add_argument('--ppn_horizon_residual_scale', type=float, default=0.1,
                         help='PPN only: scale of horizon-conditioned residual correction')
+    parser.add_argument('--ppn_use_horizon_residual_warmup', type=int, default=0,
+                        help='PPN only: enable warmup schedule for horizon residual scale during training (1/0)')
+    parser.add_argument('--ppn_horizon_residual_warmup_epochs', type=int, default=1,
+                        help='PPN only: warmup epochs to reach full residual scale')
+    parser.add_argument('--load_checkpoint', type=str, default='',
+                        help='optional path to pretrained checkpoint file or directory')
+    parser.add_argument('--load_checkpoint_strict', type=int, default=1,
+                        help='whether to load pretrained checkpoint strictly (1/0)')
     parser.add_argument('--train_subset_ratio', type=float, default=1.0,
                         help='fraction of train set to use (0,1], useful for few-shot checks')
     parser.add_argument('--subset_seed', type=int, default=42,

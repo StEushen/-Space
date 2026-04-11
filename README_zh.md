@@ -25,6 +25,14 @@
 - 在训练与验证中加入 PPN 专属的 intrinsic-time 正则项（`--ppn_use_tau_loss`, `--ppn_lambda_tau`）。
 - 新增可直接运行的优化脚本 `scripts/run_ppn_latest_optimized.ps1`（cosine 学习率 + 更长 patience）。
 
+## 更新声明（2026-04-11，τ 空间公理化重构）
+
+- PPN 已升级为“结构证据 -> 因果单调时钟 -> τ 空间预测 -> 全局映射交叉调整 -> 回投”的新一代架构，不再以二阶导作为唯一核心。
+- 新增 τ 空间辅助目标：重建一致性、动力学平坦化、单调约束、平滑约束（可通过参数开关与权重灵活控制）。
+- 保留并增强了全局映射分支，τ 域预测不采用自举式滚动，避免误差级联。
+- 已在 few-shot 设置下完成 CUDA 冒烟与同预算对照，当前版本相较旧版 `taufieldA` 获得稳定改进。
+- 本次更新对应实现文件：`models/PPN.py`、`exp/exp_long_term_forecasting.py`、`run.py`、`utils/print_args.py`、`scripts/run_ppn_horizon_residual_fewshot.ps1`。
+
 :triangular_flag_on_post:**最新动态**（2025.12）非常感谢 [ailuntz](https://github.com/thuml/Time-Series-Library/pull/805) 的杰出贡献，提供了更新的依赖要求和 Docker 部署，以及完善的文档。这对本项目和初学者都很有意义。
 
 :triangular_flag_on_post:**最新动态**（2025.11）鉴于大型时间序列模型（LTSM）的快速发展，我们在 TSLib 中新增了[[零样本预测]](https://github.com/thuml/Time-Series-Library/blob/main/exp/exp_zero_shot_forecasting.py)功能，可参考 [此脚本](https://github.com/thuml/Time-Series-Library/blob/main/scripts/long_term_forecast/ETT_script/LTSM.sh) 评测 LTSM。

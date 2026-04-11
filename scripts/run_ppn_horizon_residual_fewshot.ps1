@@ -8,7 +8,22 @@ param(
     [int[]]$Seeds = @(42, 52, 62),
     [double[]]$Ratios = @(0.1, 0.05),
     [double]$LambdaTau = 0.05,
+    [double]$LambdaTauSmooth = 0.0,
+    [double]$LambdaTauRecon = 0.05,
+    [double]$LambdaTauFlat = 0.01,
+    [double]$LambdaTauMono = 0.01,
+    [int]$UseTauSpacePredictor = 1,
+    [double]$TauGlobalScale = 1.0,
+    [double]$TauCrossAdjustScale = 0.2,
+    [int]$UseTauCrossAdjustGate = 1,
+    [int]$DisableAccelTauLossInAxiomMode = 1,
+    [int]$UseTauField = 0,
+    [double]$TauFieldLocalScale = 0.5,
     [double]$ResidualScale = 0.1,
+    [int]$IncludeTauFieldVariant = 0,
+    [int]$IncludeGatedResidual = 1,
+    [int]$IncludeWarmupResidual = 1,
+    [int]$WarmupEpochs = 2,
     [string]$Tag = "hres"
 )
 
@@ -24,14 +39,29 @@ $rankCsv = "logs/ppn_horizon_residual_${Tag}_rank.csv"
 "variant,ratio,seed,mse,mae" | Set-Content $runCsv -Encoding UTF8
 
 $variants = @(
-    @{ Name = "base"; HorizonResidual = 0 },
-    @{ Name = "horizon_residual"; HorizonResidual = 1 }
+    @{ Name = "base"; HorizonResidual = 0; HorizonResidualGate = 0; HorizonResidualWarmup = 0; UseTauField = 0 },
+    @{ Name = "horizon_residual"; HorizonResidual = 1; HorizonResidualGate = 0; HorizonResidualWarmup = 0; UseTauField = 0 }
 )
+
+if ($IncludeGatedResidual -eq 1) {
+    $variants += @{ Name = "horizon_residual_gate"; HorizonResidual = 1; HorizonResidualGate = 1; HorizonResidualWarmup = 0; UseTauField = 0 }
+}
+
+if ($IncludeWarmupResidual -eq 1) {
+    $variants += @{ Name = "horizon_residual_warmup"; HorizonResidual = 1; HorizonResidualGate = 0; HorizonResidualWarmup = 1; UseTauField = 0 }
+}
+
+if ($IncludeTauFieldVariant -eq 1) {
+    $variants += @{ Name = "horizon_residual_taufield"; HorizonResidual = 1; HorizonResidualGate = 0; HorizonResidualWarmup = 0; UseTauField = 1 }
+}
 
 foreach ($seed in $Seeds) {
     foreach ($v in $variants) {
         $variantName = $v["Name"]
         $useHorizonResidual = $v["HorizonResidual"]
+        $useHorizonResidualGate = $v["HorizonResidualGate"]
+        $useHorizonResidualWarmup = $v["HorizonResidualWarmup"]
+        $variantUseTauField = $v["UseTauField"]
 
         foreach ($ratio in $Ratios) {
             $ratioTag = ("{0}" -f $ratio).Replace(".", "p")
@@ -73,14 +103,34 @@ foreach ($seed in $Seeds) {
                 --seed $seed `
                 --ppn_use_tau_loss 1 `
                 --ppn_lambda_tau $LambdaTau `
+                --ppn_use_tau_field $variantUseTauField `
+                --ppn_tau_field_local_scale $TauFieldLocalScale `
+                --ppn_lambda_tau_smooth $LambdaTauSmooth `
+                --ppn_lambda_tau_recon $LambdaTauRecon `
+                --ppn_lambda_tau_flat $LambdaTauFlat `
+                --ppn_lambda_tau_mono $LambdaTauMono `
+                --ppn_use_tau_space_predictor $UseTauSpacePredictor `
+                --ppn_tau_global_scale $TauGlobalScale `
+                --ppn_tau_cross_adjust_scale $TauCrossAdjustScale `
+                --ppn_use_tau_cross_adjust_gate $UseTauCrossAdjustGate `
+                --ppn_disable_accel_tau_loss_in_axiom_mode $DisableAccelTauLossInAxiomMode `
                 --ppn_use_horizon_residual $useHorizonResidual `
+                --ppn_use_horizon_residual_gate $useHorizonResidualGate `
                 --ppn_horizon_residual_scale $ResidualScale `
+                --ppn_use_horizon_residual_warmup $useHorizonResidualWarmup `
+                --ppn_horizon_residual_warmup_epochs $WarmupEpochs `
                 --train_subset_ratio $ratio `
                 --subset_seed $seed `
                 --use_amp `
                 --use_gpu `
                 --gpu_type cuda `
                 --gpu 0
+
+            $runExitCode = $LASTEXITCODE
+            if ($runExitCode -ne 0) {
+                Write-Host "[WARN] Training command failed (exit=$runExitCode) for model_id=$modelId" -ForegroundColor Yellow
+                continue
+            }
 
             $settingPattern = "long_term_forecast_${modelId}_PPN"
             $tail = Get-Content result_long_term_forecast.txt -Tail 260

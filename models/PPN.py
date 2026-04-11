@@ -4,24 +4,6 @@ import torch
 import torch.nn as nn
 
 
-class IntrinsicTimeModule(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int = 32, output_dim: int | None = None):
-        super().__init__()
-        self.output_dim = int(output_dim) if output_dim is not None else int(dim)
-        self.net = nn.Sequential(
-            nn.Linear(dim * 2, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, self.output_dim),
-        )
-        self.softplus = nn.Softplus()
-        self.epsilon = 1e-3
-
-    def forward(self, x_t: torch.Tensor, x_prev: torch.Tensor) -> torch.Tensor:
-        return self.softplus(self.net(torch.cat([x_t, x_prev], dim=-1))) + self.epsilon
-
-
 class MLPBlock(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float = 0.0):
         super().__init__()
@@ -39,24 +21,37 @@ class MLPBlock(nn.Module):
         return self.net(x)
 
 
-def _repeat_steps(tensor: torch.Tensor, horizon: int) -> torch.Tensor:
-    return tensor.unsqueeze(1).expand(tensor.shape[0], horizon, tensor.shape[-1])
+class StructuralEvidenceEncoder(nn.Module):
+    """Build causal structural evidence stream from raw sequence dynamics."""
 
+    def __init__(self, dim: int, hidden_dim: int, dropout: float):
+        super().__init__()
+        input_dim = 3 * dim + 2
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+        )
 
-def _parse_tau_scales(scale_text: str) -> list[int]:
-    scales = []
-    for piece in str(scale_text).split(','):
-        piece = piece.strip()
-        if not piece:
-            continue
-        scale = int(piece)
-        if scale > 0 and scale not in scales:
-            scales.append(scale)
-    return scales if scales else [1, 2, 4]
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, L, D]
+        x_prev = torch.cat([x[:, :1, :], x[:, :-1, :]], dim=1)
+        dx = x - x_prev
+        dx_prev = torch.cat([dx[:, :1, :], dx[:, :-1, :]], dim=1)
+        d2x = dx - dx_prev
+
+        # Two lightweight structural channels beyond derivatives.
+        local_energy = (dx * dx).mean(dim=-1, keepdim=True)
+        local_curvature = torch.abs(d2x).mean(dim=-1, keepdim=True)
+
+        feat = torch.cat([x, dx, d2x, local_energy, local_curvature], dim=-1)
+        return self.encoder(feat)
 
 
 class Model(nn.Module):
-    """TSLib-compatible PPN model wrapper."""
+    """Axiomatic tau-space PPN: structure -> clock -> tau-domain forecast -> projection."""
 
     def __init__(self, configs):
         super().__init__()
@@ -65,71 +60,154 @@ class Model(nn.Module):
         self.horizon = int(configs.pred_len)
         self.hidden_dim = int(getattr(configs, "d_model", 128))
         self.dropout = float(getattr(configs, "dropout", 0.0))
-        self.use_patch_embed = int(getattr(configs, "ppn_use_patch_embed", 0)) == 1
-        self.patch_len = int(getattr(configs, "ppn_patch_len", 8))
-        self.patch_stride = int(getattr(configs, "ppn_patch_stride", 4))
-        self.use_var_tau_gate = int(getattr(configs, "ppn_use_var_tau_gate", 0)) == 1
-        self.var_tau_gate_scale = float(getattr(configs, "ppn_var_tau_gate_scale", 0.25))
-        self.use_multi_scale_tau = int(getattr(configs, "ppn_use_multi_scale_tau", 0)) == 1
-        self.tau_scales = _parse_tau_scales(getattr(configs, "ppn_tau_scales", "1,2,4"))
+
+        # Axiomatic tau-space controls.
+        self.use_tau_space_predictor = int(getattr(configs, "ppn_use_tau_space_predictor", 1)) == 1
+        self.tau_global_scale = float(getattr(configs, "ppn_tau_global_scale", 1.0))
+        self.tau_cross_adjust_scale = float(getattr(configs, "ppn_tau_cross_adjust_scale", 0.2))
+        self.use_tau_cross_adjust_gate = int(getattr(configs, "ppn_use_tau_cross_adjust_gate", 1)) == 1
+        self.use_bidirectional_tau_coupling = int(getattr(configs, "ppn_use_bidirectional_tau_coupling", 0)) == 1
+
+        # Keep compatibility with existing residual branch experiments.
         self.use_horizon_residual = int(getattr(configs, "ppn_use_horizon_residual", 0)) == 1
+        self.use_horizon_residual_gate = int(getattr(configs, "ppn_use_horizon_residual_gate", 0)) == 1
         self.horizon_residual_scale = float(getattr(configs, "ppn_horizon_residual_scale", 0.1))
 
-        self.tau_module = IntrinsicTimeModule(self.dim, hidden_dim=32, output_dim=self.dim)
+        self.structure_encoder = StructuralEvidenceEncoder(self.dim, self.hidden_dim, self.dropout)
         self.context_encoder = MLPBlock(
             input_dim=self.context_len * self.dim,
             hidden_dim=self.hidden_dim,
             output_dim=self.hidden_dim,
             dropout=self.dropout,
         )
-        self.patch_context_encoder = MLPBlock(
-            input_dim=self.dim,
+
+        # Causal monotonic clock (A1, A2, A7).
+        self.clock_delta_head = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.SiLU(),
+            nn.Linear(self.hidden_dim, 1),
+        )
+        self.softplus = nn.Softplus()
+
+        # Lift / project heads (A3, A6).
+        self.lift_head = MLPBlock(
+            input_dim=self.dim + self.hidden_dim + 1,
             hidden_dim=self.hidden_dim,
-            output_dim=self.hidden_dim,
+            output_dim=self.dim,
             dropout=self.dropout,
         )
-        self.patch_fusion = nn.Sequential(
-            nn.Linear(self.hidden_dim * 2, self.hidden_dim),
-            nn.SiLU(),
+        self.reconstruct_head = MLPBlock(
+            input_dim=self.dim,
+            hidden_dim=self.hidden_dim,
+            output_dim=self.dim,
+            dropout=self.dropout,
         )
-        self.var_tau_gate = nn.Sequential(
-            nn.Linear(2 * self.dim, self.dim),
-            nn.Sigmoid(),
-        )
-        self.multi_tau_gate = nn.Linear(self.hidden_dim + self.dim, len(self.tau_scales))
+
+        # Forecast in tau-space with explicit global branch and cross-adjustment.
         self.horizon_encoder = nn.Sequential(
             nn.Linear(1, self.hidden_dim),
             nn.SiLU(),
             nn.Linear(self.hidden_dim, self.hidden_dim),
         )
-        self.tau_path_head = MLPBlock(
-            input_dim=self.hidden_dim + 2 * self.dim + 1,
+        self.future_tau_inc_head = MLPBlock(
+            input_dim=self.hidden_dim + self.hidden_dim + 1,
+            hidden_dim=self.hidden_dim,
+            output_dim=1,
+            dropout=self.dropout,
+        )
+        self.global_mapping_head = MLPBlock(
+            input_dim=self.hidden_dim + self.dim + self.hidden_dim + 1,
             hidden_dim=self.hidden_dim,
             output_dim=self.dim,
             dropout=self.dropout,
         )
-        self.prediction_head = MLPBlock(
-            input_dim=self.hidden_dim + 4 * self.dim + 1,
+        self.tau_space_head = MLPBlock(
+            input_dim=self.hidden_dim + self.dim + 2,
             hidden_dim=self.hidden_dim,
             output_dim=self.dim,
             dropout=self.dropout,
         )
+        self.cross_adjust_head = MLPBlock(
+            input_dim=self.hidden_dim * 2 + 5 * self.dim + 2,
+            hidden_dim=self.hidden_dim,
+            output_dim=self.dim,
+            dropout=self.dropout,
+        )
+        self.cross_adjust_gate = nn.Sequential(
+            nn.Linear(self.hidden_dim + 2, self.dim),
+            nn.Sigmoid(),
+        )
+        self.tau_from_global_gate = nn.Sequential(
+            nn.Linear(self.hidden_dim + self.dim + 1, self.dim),
+            nn.Sigmoid(),
+        )
+        self.global_from_tau_gate = nn.Sequential(
+            nn.Linear(self.hidden_dim + self.dim + 1, self.dim),
+            nn.Sigmoid(),
+        )
+
         self.horizon_residual_head = MLPBlock(
             input_dim=self.hidden_dim * 2 + 5 * self.dim,
             hidden_dim=self.hidden_dim,
             output_dim=self.dim,
             dropout=self.dropout,
         )
+        self.horizon_residual_gate = nn.Sequential(
+            nn.Linear(self.hidden_dim + self.dim + 1, self.dim),
+            nn.Sigmoid(),
+        )
 
-    def _encode_patch_context(self, x_enc: torch.Tensor) -> torch.Tensor:
-        if not self.use_patch_embed or self.context_len < self.patch_len:
-            return torch.zeros(x_enc.shape[0], self.hidden_dim, device=x_enc.device, dtype=x_enc.dtype)
+        # Exposed auxiliary losses consumed by training loop.
+        self.last_tau_smooth_loss = torch.tensor(0.0)
+        self.last_tau_monotonic_loss = torch.tensor(0.0)
+        self.last_tau_recon_loss = torch.tensor(0.0)
+        self.last_tau_flatness_loss = torch.tensor(0.0)
 
-        # Build lightweight patch statistics without changing the tau-driven prediction path.
-        patches = x_enc.unfold(dimension=1, size=self.patch_len, step=max(1, self.patch_stride))
-        # [B, num_patches, D, patch_len] -> average over patch length, then over patches.
-        patch_feat = patches.mean(dim=-1).mean(dim=1)
-        return self.patch_context_encoder(patch_feat)
+    def _build_clock(self, evidence: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # evidence: [B, L, H]
+        raw_delta = self.clock_delta_head(evidence)
+        delta_tau = self.softplus(raw_delta) + 1e-3
+        tau = torch.cumsum(delta_tau, dim=1)
+        return tau, delta_tau
+
+    def _build_tau_losses(
+        self,
+        x_enc: torch.Tensor,
+        z_enc: torch.Tensor,
+        delta_tau_hist: torch.Tensor,
+        delta_tau_future: torch.Tensor,
+    ) -> None:
+        device = x_enc.device
+        dtype = x_enc.dtype
+
+        # Monotonic loss: should stay near zero due to softplus, but still monitored.
+        mono_hist = torch.relu(1e-4 - delta_tau_hist).mean()
+        mono_future = torch.relu(1e-4 - delta_tau_future).mean() if delta_tau_future.numel() > 0 else torch.zeros((), device=device, dtype=dtype)
+        self.last_tau_monotonic_loss = mono_hist + mono_future
+
+        smooth_terms = []
+        if delta_tau_hist.shape[1] > 1:
+            smooth_terms.append(torch.mean(torch.abs(delta_tau_hist[:, 1:, :] - delta_tau_hist[:, :-1, :])))
+        if delta_tau_future.shape[1] > 1:
+            smooth_terms.append(torch.mean(torch.abs(delta_tau_future[:, 1:, :] - delta_tau_future[:, :-1, :])))
+        if smooth_terms:
+            self.last_tau_smooth_loss = sum(smooth_terms) / float(len(smooth_terms))
+        else:
+            self.last_tau_smooth_loss = torch.zeros((), device=device, dtype=dtype)
+
+        # Reconstruction consistency in lifted space.
+        x_rec = self.reconstruct_head(z_enc.reshape(-1, self.dim)).reshape_as(x_enc)
+        self.last_tau_recon_loss = ((x_rec - x_enc) ** 2).mean()
+
+        # Flatness ratio in tau-space dynamics (A4).
+        if x_enc.shape[1] >= 3:
+            d2x = x_enc[:, 2:, :] - 2 * x_enc[:, 1:-1, :] + x_enc[:, :-2, :]
+            d2z = z_enc[:, 2:, :] - 2 * z_enc[:, 1:-1, :] + z_enc[:, :-2, :]
+            num = torch.mean(torch.abs(d2z))
+            den = torch.mean(torch.abs(d2x)) + 1e-6
+            self.last_tau_flatness_loss = num / den
+        else:
+            self.last_tau_flatness_loss = torch.zeros((), device=device, dtype=dtype)
 
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         del x_mark_enc, x_dec, x_mark_dec, mask
@@ -140,81 +218,99 @@ class Model(nn.Module):
                 f"PPN input mismatch: expected [B,{self.context_len},{self.dim}], got [B,{seq_len},{dim}]"
             )
 
-        x_t = x_enc[:, -1, :]
-        x_prev = x_enc[:, -2, :]
-        x_prev2 = x_enc[:, -3, :] if seq_len >= 3 else x_prev
-        recent_delta = x_t - x_prev
-
         context_embedding = self.context_encoder(x_enc.reshape(batch_size, -1))
+        evidence = self.structure_encoder(x_enc)
+        evidence_summary = evidence.mean(dim=1)
 
-        if self.use_multi_scale_tau:
-            scale_tau_t = []
-            scale_tau_prev = []
-            for scale in self.tau_scales:
-                curr_idx = seq_len - 1
-                prev_idx = max(0, curr_idx - scale)
-                prev2_idx = max(0, curr_idx - 2 * scale)
-                x_curr_s = x_enc[:, curr_idx, :]
-                x_prev_s = x_enc[:, prev_idx, :]
-                x_prev2_s = x_enc[:, prev2_idx, :]
-                scale_tau_t.append(self.tau_module(x_curr_s, x_prev_s))
-                scale_tau_prev.append(self.tau_module(x_prev_s, x_prev2_s))
+        tau_hist, delta_tau_hist = self._build_clock(evidence)
+        tau_hist_norm = tau_hist / (tau_hist[:, -1:, :] + 1e-6)
 
-            scale_logits = self.multi_tau_gate(torch.cat([context_embedding, x_t], dim=-1))
-            scale_weights = torch.softmax(scale_logits, dim=-1).unsqueeze(-1)
-            tau_t = torch.zeros(batch_size, self.dim, device=x_enc.device, dtype=x_enc.dtype)
-            tau_prev = torch.zeros(batch_size, self.dim, device=x_enc.device, dtype=x_enc.dtype)
-            for idx, tau_candidate in enumerate(scale_tau_t):
-                tau_t = tau_t + scale_weights[:, idx, :] * tau_candidate
-            for idx, tau_candidate in enumerate(scale_tau_prev):
-                tau_prev = tau_prev + scale_weights[:, idx, :] * tau_candidate
-        else:
-            tau_t = self.tau_module(x_t, x_prev)
-            tau_prev = self.tau_module(x_prev, x_prev2)
+        z_input = torch.cat([x_enc, evidence, tau_hist_norm], dim=-1)
+        z_enc = self.lift_head(z_input.reshape(batch_size * seq_len, -1)).reshape(batch_size, seq_len, self.dim)
 
-        if self.use_var_tau_gate:
-            gate = self.var_tau_gate(torch.cat([x_t, x_prev], dim=-1))
-            tau_scale = 1.0 + self.var_tau_gate_scale * (2.0 * gate - 1.0)
-            tau_t = tau_t * tau_scale
-            tau_prev = tau_prev * tau_scale
-
-        rho_t = tau_t / (tau_prev + 1e-6)
-
-        patch_embedding = self._encode_patch_context(x_enc)
-        if self.use_patch_embed:
-            context_embedding = self.patch_fusion(torch.cat([context_embedding, patch_embedding], dim=-1))
+        x_t = x_enc[:, -1, :]
+        x_prev = x_enc[:, -2, :] if seq_len >= 2 else x_t
+        recent_delta = x_t - x_prev
 
         u = torch.linspace(0, 1, self.horizon + 1, device=x_enc.device, dtype=x_enc.dtype)[1:]
         u = u.unsqueeze(0).unsqueeze(-1)
-
-        context_rep = _repeat_steps(context_embedding, self.horizon)
-        x_t_rep = _repeat_steps(x_t, self.horizon)
-        delta_rep = _repeat_steps(recent_delta, self.horizon)
-        tau_seed_rep = _repeat_steps(tau_t, self.horizon)
-        rho_rep = _repeat_steps(rho_t, self.horizon)
         u_rep = u.expand(batch_size, -1, -1)
+
+        context_rep = context_embedding.unsqueeze(1).expand(batch_size, self.horizon, self.hidden_dim)
+        evidence_rep = evidence_summary.unsqueeze(1).expand(batch_size, self.horizon, self.hidden_dim)
+        x_t_rep = x_t.unsqueeze(1).expand(batch_size, self.horizon, self.dim)
+        delta_rep = recent_delta.unsqueeze(1).expand(batch_size, self.horizon, self.dim)
+
         horizon_rep = self.horizon_encoder(u_rep.reshape(batch_size * self.horizon, 1))
         horizon_rep = horizon_rep.reshape(batch_size, self.horizon, self.hidden_dim)
 
-        tau_features = torch.cat([context_rep, x_t_rep, delta_rep, u_rep], dim=-1)
-        tau_increments = self.tau_path_head(tau_features.reshape(batch_size * self.horizon, -1))
-        tau_increments = tau_increments.reshape(batch_size, self.horizon, self.dim)
-        tau_increments = torch.nn.functional.softplus(tau_increments) + 1e-3
-        tau_path = tau_seed_rep + torch.cumsum(tau_increments, dim=1)
+        # Future tau trajectory: non-bootstrap one-shot path.
+        tau_seed = tau_hist[:, -1:, :].expand(batch_size, self.horizon, 1)
+        future_tau_feat = torch.cat([context_rep, evidence_rep, u_rep], dim=-1)
+        delta_tau_future = self.softplus(
+            self.future_tau_inc_head(future_tau_feat.reshape(batch_size * self.horizon, -1)).reshape(batch_size, self.horizon, 1)
+        ) + 1e-3
+        tau_future = tau_seed + torch.cumsum(delta_tau_future, dim=1)
+        tau_ratio = tau_future / (tau_seed + 1e-6)
 
-        features = torch.cat([context_rep, x_t_rep, delta_rep, tau_path, rho_rep, u_rep], dim=-1)
-        deltas = self.prediction_head(features.reshape(batch_size * self.horizon, -1))
-        deltas = deltas.reshape(batch_size, self.horizon, self.dim)
+        # Global mapping branch (required to prevent tau-only self-bootstrap).
+        global_feat = torch.cat([context_rep, x_t_rep, horizon_rep, u_rep], dim=-1)
+        global_delta = self.global_mapping_head(global_feat.reshape(batch_size * self.horizon, -1))
+        global_delta = global_delta.reshape(batch_size, self.horizon, self.dim)
+        global_pred = x_t_rep + self.tau_global_scale * global_delta
+
+        # Tau-space branch.
+        tau_feat = torch.cat([context_rep, x_t_rep, tau_ratio, u_rep], dim=-1)
+        tau_delta = self.tau_space_head(tau_feat.reshape(batch_size * self.horizon, -1))
+        tau_delta = tau_delta.reshape(batch_size, self.horizon, self.dim)
+
+        # Bidirectional coupling: global dynamics constrain tau amplitude and vice versa.
+        if self.use_bidirectional_tau_coupling:
+            tau_gate_feat = torch.cat([horizon_rep, global_delta, u_rep], dim=-1)
+            tau_gate = self.tau_from_global_gate(tau_gate_feat.reshape(batch_size * self.horizon, -1))
+            tau_gate = tau_gate.reshape(batch_size, self.horizon, self.dim)
+            tau_delta = tau_delta * tau_gate
+
+            global_gate_feat = torch.cat([horizon_rep, tau_delta, u_rep], dim=-1)
+            global_gate = self.global_from_tau_gate(global_gate_feat.reshape(batch_size * self.horizon, -1))
+            global_gate = global_gate.reshape(batch_size, self.horizon, self.dim)
+            global_pred = global_pred + self.tau_cross_adjust_scale * global_gate * tau_delta
+
+        if self.use_tau_space_predictor:
+            pred = global_pred + tau_delta
+
+            cross_feat = torch.cat(
+                [context_rep, horizon_rep, x_t_rep, delta_rep, global_delta, tau_delta, global_pred, tau_ratio, u_rep],
+                dim=-1,
+            )
+            cross_delta = self.cross_adjust_head(cross_feat.reshape(batch_size * self.horizon, -1))
+            cross_delta = cross_delta.reshape(batch_size, self.horizon, self.dim)
+
+            if self.use_tau_cross_adjust_gate:
+                gate_feat = torch.cat([horizon_rep, tau_ratio, u_rep], dim=-1)
+                gate = self.cross_adjust_gate(gate_feat.reshape(batch_size * self.horizon, -1))
+                gate = gate.reshape(batch_size, self.horizon, self.dim)
+                cross_delta = cross_delta * gate
+
+            pred = pred + self.tau_cross_adjust_scale * cross_delta
+        else:
+            pred = global_pred
 
         if self.use_horizon_residual:
-            residual_features = torch.cat([context_rep, x_t_rep, delta_rep, tau_path, rho_rep, horizon_rep, deltas], dim=-1)
+            residual_features = torch.cat(
+                [context_rep, x_t_rep, delta_rep, pred, global_delta, horizon_rep, tau_delta],
+                dim=-1,
+            )
             residual = self.horizon_residual_head(residual_features.reshape(batch_size * self.horizon, -1))
             residual = residual.reshape(batch_size, self.horizon, self.dim)
-            deltas = deltas + self.horizon_residual_scale * residual
 
-        pred = x_t.unsqueeze(1) + deltas
+            if self.use_horizon_residual_gate:
+                residual_gate_features = torch.cat([horizon_rep, tau_ratio, u_rep], dim=-1)
+                residual_gate = self.horizon_residual_gate(residual_gate_features.reshape(batch_size * self.horizon, -1))
+                residual_gate = residual_gate.reshape(batch_size, self.horizon, self.dim)
+                residual = residual * residual_gate
 
-        # TSLib forecast pipeline expects output length = label_len + pred_len.
-        # The model now generates the whole horizon directly from a tau trajectory,
-        # without bootstrap rollouts.
+            pred = pred + self.horizon_residual_scale * residual
+
+        self._build_tau_losses(x_enc, z_enc, delta_tau_hist, delta_tau_future)
         return pred
