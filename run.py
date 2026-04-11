@@ -95,6 +95,38 @@ if __name__ == '__main__':
                         help='PPN only: enable intrinsic-time regularization loss (1/0)')
     parser.add_argument('--ppn_lambda_tau', type=float, default=0.2,
                         help='PPN only: weight of intrinsic-time regularization loss')
+    parser.add_argument('--ppn_use_partition_correction', type=int, default=0,
+                        help='PPN only: enable global-fit + partition-correction training (1/0)')
+    parser.add_argument('--ppn_n_groups', type=int, default=1,
+                        help='PPN only: N partitions for partition-correction stage')
+    parser.add_argument('--ppn_m_cycles', type=int, default=1,
+                        help='PPN only: repeat each partition pass for M cycles per epoch')
+    parser.add_argument('--ppn_lambda_corr', type=float, default=0.1,
+                        help='PPN only: weight of partition correction loss')
+    parser.add_argument('--ppn_corr_margin', type=float, default=0.0,
+                        help='PPN only: margin for correction hinge on per-step local/global MSE')
+    parser.add_argument('--ppn_use_patch_embed', type=int, default=0,
+                        help='PPN only: enable patch-level context embedding (1/0)')
+    parser.add_argument('--ppn_patch_len', type=int, default=8,
+                        help='PPN only: patch length for patch context embedding')
+    parser.add_argument('--ppn_patch_stride', type=int, default=4,
+                        help='PPN only: patch stride for patch context embedding')
+    parser.add_argument('--ppn_use_var_tau_gate', type=int, default=0,
+                        help='PPN only: enable variable-wise tau gating (1/0)')
+    parser.add_argument('--ppn_var_tau_gate_scale', type=float, default=0.25,
+                        help='PPN only: scale of variable-wise tau gate modulation')
+    parser.add_argument('--ppn_use_multi_scale_tau', type=int, default=0,
+                        help='PPN only: enable multi-scale intrinsic-time aggregation (1/0)')
+    parser.add_argument('--ppn_tau_scales', type=str, default='1,2,4',
+                        help='PPN only: comma-separated tau scales used by multi-scale aggregation')
+    parser.add_argument('--ppn_use_horizon_residual', type=int, default=0,
+                        help='PPN only: enable horizon-conditioned residual correction (1/0)')
+    parser.add_argument('--ppn_horizon_residual_scale', type=float, default=0.1,
+                        help='PPN only: scale of horizon-conditioned residual correction')
+    parser.add_argument('--train_subset_ratio', type=float, default=1.0,
+                        help='fraction of train set to use (0,1], useful for few-shot checks')
+    parser.add_argument('--subset_seed', type=int, default=42,
+                        help='random seed for train subset sampling when train_subset_ratio < 1.0')
 
     # GPU
     parser.add_argument('--use_gpu', action='store_true', default=True, help='use gpu (default: on)')
