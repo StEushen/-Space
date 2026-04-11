@@ -19,6 +19,12 @@ Correction term:
 
 The rest of this document preserves the TSLib benchmark and usage notes that the PPN implementation relies on.
 
+## Latest Optimization Update (2026-04-11)
+
+- Replaced direct single-step style extrapolation with tau-trajectory direct horizon generation in `models/PPN.py`.
+- Added PPN-specific intrinsic-time regularization to training and validation (`--ppn_use_tau_loss`, `--ppn_lambda_tau`).
+- Added an optimized runnable script at `scripts/run_ppn_latest_optimized.ps1` using cosine LR and longer patience.
+
 :triangular_flag_on_post:**News** (2025.12) Many thanks to the great work from [ailuntz](https://github.com/thuml/Time-Series-Library/pull/805), which provides an updated requirements and docker deployment, as well as a well-organized document. This is quite meaningful to this project and beginners.
 
 :triangular_flag_on_post:**News** (2025.11) Considering the rapid development of Large Time Series Models (LTSMs), we have newly added a [[zero-shot forecasting]](https://github.com/thuml/Time-Series-Library/blob/main/exp/exp_zero_shot_forecasting.py) feature in TSLib. You can try [this script](https://github.com/thuml/Time-Series-Library/blob/main/scripts/long_term_forecast/ETT_script/LTSM.sh) to evaluate LTSMs.

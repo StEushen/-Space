@@ -19,6 +19,12 @@
 
 本文档后半部分保留 TSLib 的基准与使用说明，便于当前 PPN 实现继续复用。
 
+## 最新优化更新（2026-04-11）
+
+- 在 `models/PPN.py` 中将预测方式升级为 tau 轨迹驱动的整段预测生成。
+- 在训练与验证中加入 PPN 专属的 intrinsic-time 正则项（`--ppn_use_tau_loss`, `--ppn_lambda_tau`）。
+- 新增可直接运行的优化脚本 `scripts/run_ppn_latest_optimized.ps1`（cosine 学习率 + 更长 patience）。
+
 :triangular_flag_on_post:**最新动态**（2025.12）非常感谢 [ailuntz](https://github.com/thuml/Time-Series-Library/pull/805) 的杰出贡献，提供了更新的依赖要求和 Docker 部署，以及完善的文档。这对本项目和初学者都很有意义。
 
 :triangular_flag_on_post:**最新动态**（2025.11）鉴于大型时间序列模型（LTSM）的快速发展，我们在 TSLib 中新增了[[零样本预测]](https://github.com/thuml/Time-Series-Library/blob/main/exp/exp_zero_shot_forecasting.py)功能，可参考 [此脚本](https://github.com/thuml/Time-Series-Library/blob/main/scripts/long_term_forecast/ETT_script/LTSM.sh) 评测 LTSM。
