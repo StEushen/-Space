@@ -143,7 +143,7 @@ if __name__ == '__main__':
                         help='PPN only: weight of monotonic clock constraint loss')
     parser.add_argument('--ppn_disable_accel_tau_loss_in_axiom_mode', type=int, default=1,
                         help='PPN only: disable acceleration-analogy tau loss when tau-space predictor is enabled (1/0)')
-    parser.add_argument('--ppn_use_tau_phase_schedule', type=int, default=0,
+    parser.add_argument('--ppn_use_tau_phase_schedule', type=int, default=1,
                         help='PPN only: use 3-phase schedule for tau-space auxiliary losses (1/0)')
     parser.add_argument('--ppn_tau_phase1_ratio', type=float, default=0.3,
                         help='PPN only: fraction of epochs for phase-1 (global mapping focus)')
