@@ -1,0 +1,7 @@
+﻿"model","ratio","seed","mse","mae","model_id"
+"PatchTST","0.1","62","0.4065178632736206","0.41213107109069824","patchtst_taufusion_small_v1_PatchTST_r0p1_s62"
+"PatchTST","0.1","52","0.4065914452075958","0.4122491478919983","patchtst_taufusion_small_v1_PatchTST_r0p1_s52"
+"PatchTST","0.1","42","0.4084555506706238","0.4107040762901306","patchtst_taufusion_small_v1_PatchTST_r0p1_s42"
+"TauFusion_PatchTST","0.1","52","0.43246519565582275","0.4469030797481537","patchtst_taufusion_small_v1_TauFusion_PatchTST_r0p1_s52"
+"TauFusion_PatchTST","0.1","62","0.4437095820903778","0.4544713795185089","patchtst_taufusion_small_v1_TauFusion_PatchTST_r0p1_s62"
+"TauFusion_PatchTST","0.1","42","0.4440421760082245","0.45452985167503357","patchtst_taufusion_small_v1_TauFusion_PatchTST_r0p1_s42"

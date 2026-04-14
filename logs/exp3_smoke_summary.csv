@@ -1,0 +1,3 @@
+﻿model,n,mse_mean,mse_std,mae_mean,mae_std
+TauOnly,1,0.708118319511414,0,0.560327649116516,0
+TauFusion,1,0.471738070249557,0,0.476040333509445,0

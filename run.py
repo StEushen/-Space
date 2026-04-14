@@ -143,6 +143,24 @@ if __name__ == '__main__':
                         help='PPN only: weight of monotonic clock constraint loss')
     parser.add_argument('--ppn_disable_accel_tau_loss_in_axiom_mode', type=int, default=1,
                         help='PPN only: disable acceleration-analogy tau loss when tau-space predictor is enabled (1/0)')
+    parser.add_argument('--ppn_max_tau_integration_steps', type=int, default=0,
+                        help='PPN only: maximum tau integration steps; 0 means model default')
+    parser.add_argument('--ppn_use_transformer', type=int, default=0,
+                        help='PPN only: use transformer for tau-step evolution instead of GRU (1/0)')
+    parser.add_argument('--ppn_tau_stop_eps', type=float, default=1e-4,
+                        help='PPN only: stop tolerance for tau-target integration')
+    parser.add_argument('--ppn_tau_use_residual_refine', type=int, default=1,
+                        help='PPN only: enable residual tau dynamics refine on top of GRU step (1/0)')
+    parser.add_argument('--ppn_tau_coarse_kernel', type=int, default=4,
+                        help='PPN only: kernel size for coarse tau clock branch')
+    parser.add_argument('--ppn_tau_coarse_stride', type=int, default=4,
+                        help='PPN only: stride for coarse tau clock branch')
+    parser.add_argument('--ppn_lambda_tau_traj_smooth', type=float, default=0.002,
+                        help='PPN only: weight of tau-trajectory smooth regularization')
+    parser.add_argument('--ppn_lambda_proj_cycle', type=float, default=0.0,
+                        help='PPN only: weight of bidirectional projection consistency')
+    parser.add_argument('--ppn_lambda_tau_contrast', type=float, default=0.01,
+                        help='PPN only: weight of tau-space contrastive alignment')
     parser.add_argument('--ppn_use_tau_phase_schedule', type=int, default=1,
                         help='PPN only: use 3-phase schedule for tau-space auxiliary losses (1/0)')
     parser.add_argument('--ppn_tau_phase1_ratio', type=float, default=0.3,
@@ -165,6 +183,24 @@ if __name__ == '__main__':
                         help='PPN only: enable warmup schedule for horizon residual scale during training (1/0)')
     parser.add_argument('--ppn_horizon_residual_warmup_epochs', type=int, default=1,
                         help='PPN only: warmup epochs to reach full residual scale')
+    parser.add_argument('--tau_base_model', type=str, default='DLinear',
+                        help='TauFusion only: backbone model to fuse with tau mechanism')
+    parser.add_argument('--tau_fuse_alpha', type=float, default=0.3,
+                        help='TauFusion only: initial fusion weight for tau branch in [0,1]')
+    parser.add_argument('--tauonly_anchor_delay_epochs', type=int, default=0,
+                        help='TauOnly only: epochs to keep anchor branch disabled at training start')
+    parser.add_argument('--tauonly_anchor_scale', type=float, default=1.0,
+                        help='TauOnly only: base scale of anchor branch after delay')
+    parser.add_argument('--tau_teacher_checkpoint', type=str, default='',
+                        help='TauClock student only: checkpoint path for loading tau teacher weights')
+    parser.add_argument('--tau_teacher_strict', type=int, default=1,
+                        help='TauClock student only: strict teacher checkpoint loading (1/0)')
+    parser.add_argument('--tau_teacher_trainable', type=int, default=0,
+                        help='TauClock student only: whether tau teacher is trainable during student training (1/0)')
+    parser.add_argument('--tau_student_hidden_dim', type=int, default=128,
+                        help='TauClock student only: hidden dimension of weak GRU predictor')
+    parser.add_argument('--tau_student_num_layers', type=int, default=1,
+                        help='TauClock student only: number of GRU layers for weak predictor')
     parser.add_argument('--load_checkpoint', type=str, default='',
                         help='optional path to pretrained checkpoint file or directory')
     parser.add_argument('--load_checkpoint_strict', type=int, default=1,

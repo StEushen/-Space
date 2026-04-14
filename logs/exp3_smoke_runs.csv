@@ -1,0 +1,3 @@
+﻿model,seed,mse,mae,model_id
+TauOnly,42,0.7081183195114136,0.5603276491165161,exp3_smoke_TauOnly_s42
+TauFusion,42,0.4717380702495575,0.4760403335094452,exp3_smoke_TauFusion_s42

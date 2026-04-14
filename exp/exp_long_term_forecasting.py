@@ -40,7 +40,22 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         return criterion
 
     def _is_ppn_model(self):
-        return str(getattr(self.args, 'model', '')).lower() == 'ppn'
+        return str(getattr(self.args, 'model', '')).lower() in {'ppn', 'tauonly'}
+
+    def _is_tauonly_model(self):
+        return str(getattr(self.args, 'model', '')).lower() == 'tauonly'
+
+    def _apply_tauonly_anchor_schedule(self, epoch_idx):
+        if not self._is_tauonly_model():
+            return
+
+        model_ref = self.model.module if hasattr(self.model, 'module') else self.model
+        if not hasattr(model_ref, 'anchor_active_scale'):
+            return
+
+        delay_epochs = max(0, int(getattr(self.args, 'tauonly_anchor_delay_epochs', 0)))
+        base_scale = float(getattr(self.args, 'tauonly_anchor_scale', 1.0))
+        model_ref.anchor_active_scale = 0.0 if epoch_idx < delay_epochs else base_scale
 
     def _compute_ppn_tau_loss(self, batch_x):
         if not self._is_ppn_model() or int(getattr(self.args, 'ppn_use_tau_loss', 1)) == 0:
@@ -62,10 +77,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         x_t2 = batch_x[:, -3, :]
         x_t3 = batch_x[:, -4, :]
 
-        if hasattr(model_ref, '_compute_tau_field'):
+        # Use model-specific tau computation.
+        if hasattr(model_ref, '_compute_simple_tau'):
+            tau_t = model_ref._compute_simple_tau(x_t, x_t1, x_t2)
+        elif hasattr(model_ref, '_compute_tau_field'):
             tau_t = model_ref._compute_tau_field(x_t, x_t1, x_t2)
         else:
-            tau_t = tau_module(x_t, x_t1)
+            v_t = x_t - x_t1
+            v_t1 = x_t1 - x_t2
+            v_t_norm = torch.norm(v_t, dim=-1, keepdim=True).clamp_min(1e-6)
+            v_t1_norm = torch.norm(v_t1, dim=-1, keepdim=True).clamp_min(1e-6)
+            tau_t = v_t_norm / (v_t1_norm.clamp_min(1e-6) + 1e-6)
         a_t = x_t - 2 * x_t1 + x_t2
         a_t1 = x_t1 - 2 * x_t2 + x_t3
         delta_a = torch.norm(a_t - a_t1, dim=-1, keepdim=True)
@@ -84,6 +106,27 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         tau_flat = getattr(model_ref, 'last_tau_flatness_loss', torch.zeros((), device=ref_tensor.device, dtype=ref_tensor.dtype))
         tau_mono = getattr(model_ref, 'last_tau_monotonic_loss', torch.zeros((), device=ref_tensor.device, dtype=ref_tensor.dtype))
         return tau_recon, tau_flat, tau_mono
+
+    def _compute_ppn_traj_smooth_loss(self, ref_tensor):
+        if not self._is_ppn_model():
+            return torch.zeros((), device=ref_tensor.device, dtype=ref_tensor.dtype)
+
+        model_ref = self.model.module if hasattr(self.model, 'module') else self.model
+        return getattr(model_ref, 'last_tau_traj_smooth_loss', torch.zeros((), device=ref_tensor.device, dtype=ref_tensor.dtype))
+
+    def _compute_ppn_proj_cycle_loss(self, ref_tensor):
+        if not self._is_ppn_model():
+            return torch.zeros((), device=ref_tensor.device, dtype=ref_tensor.dtype)
+
+        model_ref = self.model.module if hasattr(self.model, 'module') else self.model
+        return getattr(model_ref, 'last_tau_proj_cycle_loss', torch.zeros((), device=ref_tensor.device, dtype=ref_tensor.dtype))
+
+    def _compute_ppn_contrast_loss(self, ref_tensor):
+        if not self._is_ppn_model():
+            return torch.zeros((), device=ref_tensor.device, dtype=ref_tensor.dtype)
+
+        model_ref = self.model.module if hasattr(self.model, 'module') else self.model
+        return getattr(model_ref, 'last_tau_contrast_loss', torch.zeros((), device=ref_tensor.device, dtype=ref_tensor.dtype))
 
     def _get_tau_aux_scale(self, epoch_idx):
         if int(getattr(self.args, 'ppn_use_tau_phase_schedule', 1)) != 1:
@@ -223,11 +266,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 tau_loss = self._compute_ppn_tau_loss(batch_x)
                 model_ref = self.model.module if hasattr(self.model, 'module') else self.model
                 tau_smooth_loss = getattr(model_ref, 'last_tau_smooth_loss', torch.zeros((), device=pred.device, dtype=pred.dtype))
+                tau_traj_smooth_loss = self._compute_ppn_traj_smooth_loss(pred)
+                tau_proj_cycle_loss = self._compute_ppn_proj_cycle_loss(pred)
+                tau_contrast_loss = self._compute_ppn_contrast_loss(pred)
                 tau_recon_loss, tau_flat_loss, tau_mono_loss = self._compute_ppn_axiom_losses(pred)
                 loss = (
                     mse_loss
                     + float(getattr(self.args, 'ppn_lambda_tau', 0.2)) * tau_loss
                     + float(getattr(self.args, 'ppn_lambda_tau_smooth', 0.0)) * tau_smooth_loss
+                    + float(getattr(self.args, 'ppn_lambda_tau_traj_smooth', 0.0)) * tau_traj_smooth_loss
+                    + float(getattr(self.args, 'ppn_lambda_proj_cycle', 0.0)) * tau_proj_cycle_loss
+                    + float(getattr(self.args, 'ppn_lambda_tau_contrast', 0.0)) * tau_contrast_loss
                     + tau_aux_scale * float(getattr(self.args, 'ppn_lambda_tau_recon', 0.05)) * tau_recon_loss
                     + tau_aux_scale * float(getattr(self.args, 'ppn_lambda_tau_flat', 0.01)) * tau_flat_loss
                     + tau_aux_scale * float(getattr(self.args, 'ppn_lambda_tau_mono', 0.01)) * tau_mono_loss
@@ -290,11 +339,15 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         for epoch in range(self.args.train_epochs):
             self._apply_ppn_residual_scale_schedule(epoch)
+            self._apply_tauonly_anchor_schedule(epoch)
             tau_aux_scale = self._get_tau_aux_scale(epoch)
             iter_count = 0
             train_loss = []
             tau_losses = []
             tau_smooth_losses = []
+            tau_traj_smooth_losses = []
+            tau_proj_cycle_losses = []
+            tau_contrast_losses = []
             tau_recon_losses = []
             tau_flat_losses = []
             tau_mono_losses = []
@@ -341,12 +394,18 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             tau_loss = self._compute_ppn_tau_loss(batch_x)
                             model_ref = self.model.module if hasattr(self.model, 'module') else self.model
                             tau_smooth_loss = getattr(model_ref, 'last_tau_smooth_loss', torch.zeros((), device=outputs.device, dtype=outputs.dtype))
+                            tau_traj_smooth_loss = self._compute_ppn_traj_smooth_loss(outputs)
+                            tau_proj_cycle_loss = self._compute_ppn_proj_cycle_loss(outputs)
+                            tau_contrast_loss = self._compute_ppn_contrast_loss(outputs)
                             tau_recon_loss, tau_flat_loss, tau_mono_loss = self._compute_ppn_axiom_losses(outputs)
                             corr_loss = self._compute_partition_correction_loss(outputs, batch_y, global_step_mse)
                             loss = (
                                 mse_loss
                                 + float(getattr(self.args, 'ppn_lambda_tau', 0.2)) * tau_loss
                                 + float(getattr(self.args, 'ppn_lambda_tau_smooth', 0.0)) * tau_smooth_loss
+                                + float(getattr(self.args, 'ppn_lambda_tau_traj_smooth', 0.0)) * tau_traj_smooth_loss
+                                + float(getattr(self.args, 'ppn_lambda_proj_cycle', 0.0)) * tau_proj_cycle_loss
+                                + float(getattr(self.args, 'ppn_lambda_tau_contrast', 0.0)) * tau_contrast_loss
                                 + tau_aux_scale * float(getattr(self.args, 'ppn_lambda_tau_recon', 0.05)) * tau_recon_loss
                                 + tau_aux_scale * float(getattr(self.args, 'ppn_lambda_tau_flat', 0.01)) * tau_flat_loss
                                 + tau_aux_scale * float(getattr(self.args, 'ppn_lambda_tau_mono', 0.01)) * tau_mono_loss
@@ -362,12 +421,18 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         tau_loss = self._compute_ppn_tau_loss(batch_x)
                         model_ref = self.model.module if hasattr(self.model, 'module') else self.model
                         tau_smooth_loss = getattr(model_ref, 'last_tau_smooth_loss', torch.zeros((), device=outputs.device, dtype=outputs.dtype))
+                        tau_traj_smooth_loss = self._compute_ppn_traj_smooth_loss(outputs)
+                        tau_proj_cycle_loss = self._compute_ppn_proj_cycle_loss(outputs)
+                        tau_contrast_loss = self._compute_ppn_contrast_loss(outputs)
                         tau_recon_loss, tau_flat_loss, tau_mono_loss = self._compute_ppn_axiom_losses(outputs)
                         corr_loss = self._compute_partition_correction_loss(outputs, batch_y, global_step_mse)
                         loss = (
                             mse_loss
                             + float(getattr(self.args, 'ppn_lambda_tau', 0.2)) * tau_loss
                             + float(getattr(self.args, 'ppn_lambda_tau_smooth', 0.0)) * tau_smooth_loss
+                            + float(getattr(self.args, 'ppn_lambda_tau_traj_smooth', 0.0)) * tau_traj_smooth_loss
+                            + float(getattr(self.args, 'ppn_lambda_proj_cycle', 0.0)) * tau_proj_cycle_loss
+                            + float(getattr(self.args, 'ppn_lambda_tau_contrast', 0.0)) * tau_contrast_loss
                             + tau_aux_scale * float(getattr(self.args, 'ppn_lambda_tau_recon', 0.05)) * tau_recon_loss
                             + tau_aux_scale * float(getattr(self.args, 'ppn_lambda_tau_flat', 0.01)) * tau_flat_loss
                             + tau_aux_scale * float(getattr(self.args, 'ppn_lambda_tau_mono', 0.01)) * tau_mono_loss
@@ -377,6 +442,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     train_loss.append(loss.item())
                     tau_losses.append(tau_loss.item())
                     tau_smooth_losses.append(tau_smooth_loss.item())
+                    tau_traj_smooth_losses.append(tau_traj_smooth_loss.item())
+                    tau_proj_cycle_losses.append(tau_proj_cycle_loss.item())
+                    tau_contrast_losses.append(tau_contrast_loss.item())
                     tau_recon_losses.append(tau_recon_loss.item())
                     tau_flat_losses.append(tau_flat_loss.item())
                     tau_mono_losses.append(tau_mono_loss.item())
@@ -420,6 +488,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 ))
                 if tau_smooth_losses:
                     print("Tau Smooth Loss: {0:.7f}".format(float(np.average(tau_smooth_losses))))
+                if tau_traj_smooth_losses:
+                    print("Tau Traj Smooth: {0:.7f}".format(float(np.average(tau_traj_smooth_losses))))
+                if tau_proj_cycle_losses:
+                    print("Tau Proj Cycle: {0:.7f}".format(float(np.average(tau_proj_cycle_losses))))
+                if tau_contrast_losses:
+                    print("Tau Contrast: {0:.7f}".format(float(np.average(tau_contrast_losses))))
                 if tau_recon_losses:
                     print("Tau Recon Loss:  {0:.7f}".format(float(np.average(tau_recon_losses))))
                 if tau_flat_losses:

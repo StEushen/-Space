@@ -1,0 +1,9 @@
+﻿tag=tauonly_robust_baseline_v1_fixcheck
+epochs=1
+ratio=0.1
+seeds=42,52,62
+count=3
+mse_mean=0.701051990191142
+mse_std=0.0012299216328251
+mae_mean=0.557662387688955
+mae_std=0.00132763752425236

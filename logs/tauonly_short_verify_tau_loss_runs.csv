@@ -1,0 +1,2 @@
+﻿pred_len,epochs,ratio,seed,test_mse,test_mae,tau_loss_final,tau_smooth_final,proj_cycle_final
+24,3,1.0,42,0.49424782395362854,0.471409410238266,2.5613716,0.0176191,0.1638603
